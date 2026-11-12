@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <dirent.h>
+#include <dlfcn.h>
 
 #include <CoreFoundation/CoreFoundation.h>
 

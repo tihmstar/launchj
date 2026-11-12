@@ -1,6 +1,10 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <string.h>
+
+#define safeClose(fd) ({if (fd != -1) {close(fd); fd=-1;}})
 
 int main(){
     int fd_console = open("/dev/console", O_RDWR, 0);
