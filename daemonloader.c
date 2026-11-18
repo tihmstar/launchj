@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <dirent.h>
 #include <dlfcn.h>
+#include <sys/stat.h>
 
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -19,6 +20,7 @@ typedef void* xpc_object_t;
 typedef void* xpc_type_t;
 typedef void* launch_data_t;
 typedef bool (^xpc_dictionary_applier_t)(const char *key, xpc_object_t value);
+typedef bool (^xpc_array_applier_t)(size_t index, xpc_object_t value);
 
 xpc_object_t xpc_dictionary_create(const char * const *keys, const xpc_object_t *values, size_t count);
 void xpc_dictionary_set_uint64(xpc_object_t dictionary, const char *key, uint64_t value);
@@ -45,6 +47,10 @@ xpc_object_t xpc_double_create(double value);
 xpc_object_t xpc_int64_create(int64_t value);
 xpc_object_t xpc_data_create(const void *bytes, size_t length);
 void xpc_release(xpc_object_t object);
+bool xpc_bool_get_value(xpc_object_t xbool);
+size_t xpc_data_get_length(xpc_object_t xdata);
+bool xpc_array_apply(xpc_object_t xarray, xpc_array_applier_t applier);
+#define xpc_array_append_string(arr,s) do {xpc_object_t o = xpc_string_create(s); xpc_array_append_value(arr, o); xpc_release(o);}while(0)
 
 #define XPC_ARRAY_APPEND ((size_t)(-1))
 #define XPC_ERROR_CONNECTION_INVALID XPC_GLOBAL_OBJECT(_xpc_error_connection_invalid)
@@ -161,57 +167,80 @@ xpc_object_t my_xpc_dictionary_get_value(xpc_object_t dict, const char *key) {
             int err = 0;
             DIR *dir = NULL;
             struct dirent *ent = NULL;
-            cassure(dir = opendir("/Library/LaunchDaemons/"));
-            while ((ent = readdir(dir)) != NULL) {
-                size_t nameLen = strlen(ent->d_name);
-                if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
-                if (nameLen < 6 || strcmp(".plist", ent->d_name + nameLen - 6) != 0) continue;
+            dir = opendir("/Library/LaunchDaemons/");
+            if (dir){
+                while ((ent = readdir(dir)) != NULL) {
+                    size_t nameLen = strlen(ent->d_name);
+                    if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+                    if (nameLen < 6 || strcmp(".plist", ent->d_name + nameLen - 6) != 0) continue;
 
-                char fullPath[PATH_MAX];
-                snprintf(fullPath, sizeof(fullPath), "/Library/LaunchDaemons/%s", ent->d_name);
+                    char fullPath[PATH_MAX];
+                    snprintf(fullPath, sizeof(fullPath), "/Library/LaunchDaemons/%s", ent->d_name);
 
-                FILE *fp = fopen(fullPath, "rb");
-                if (!fp) continue;
+                    FILE *fp = fopen(fullPath, "rb");
+                    if (!fp) continue;
 
-                fseek(fp, 0, SEEK_END);
-                long fsize = ftell(fp);
-                fseek(fp, 0, SEEK_SET);
+                    fseek(fp, 0, SEEK_END);
+                    long fsize = ftell(fp);
+                    fseek(fp, 0, SEEK_SET);
 
-                if (fsize > 0) {
-                    uint8_t *buf = malloc(fsize);
-                    if (buf && fread(buf, 1, fsize, fp) == (size_t)fsize) {
-                        CFDataRef data = CFDataCreateWithBytesNoCopy(
-                            kCFAllocatorDefault, buf, fsize, kCFAllocatorNull
-                        );
-                        if (data) {
-                            CFPropertyListRef plist = CFPropertyListCreateWithData(
-                                kCFAllocatorDefault, data, kCFPropertyListImmutable, NULL, NULL
+                    if (fsize > 0) {
+                        uint8_t *buf = malloc(fsize);
+                        if (buf && fread(buf, 1, fsize, fp) == (size_t)fsize) {
+                            CFDataRef data = CFDataCreateWithBytesNoCopy(
+                                kCFAllocatorDefault, buf, fsize, kCFAllocatorNull
                             );
-                            if (plist) {
-                                if (CFGetTypeID(plist) == CFDictionaryGetTypeID()) {
-                                    xpc_object_t submitJob = cf_to_xpc(plist);
-                                    if (submitJob) {
-                                        char sysPath[PATH_MAX];
-                                        snprintf(sysPath, sizeof(sysPath), "/System/Library/LaunchDaemons/%s", ent->d_name);
-                                        xpc_dictionary_set_value(retval, sysPath, submitJob);
-                                        xpc_release(submitJob);
+                            if (data) {
+                                CFPropertyListRef plist = CFPropertyListCreateWithData(
+                                    kCFAllocatorDefault, data, kCFPropertyListImmutable, NULL, NULL
+                                );
+                                if (plist) {
+                                    if (CFGetTypeID(plist) == CFDictionaryGetTypeID()) {
+                                        xpc_object_t submitJob = cf_to_xpc(plist);
+                                        if (submitJob) {
+                                            xpc_dictionary_set_value(retval, fullPath, submitJob);
+                                            xpc_release(submitJob);
+                                        }
                                     }
+                                    CFRelease(plist);
                                 }
-                                CFRelease(plist);
+                                CFRelease(data);
                             }
-                            CFRelease(data);
                         }
+                        free(buf);
                     }
-                    free(buf);
+                    fclose(fp);
                 }
-                fclose(fp);
             }
-            error:;
-                safeFreeCustom(dir, closedir);
+            safeFreeCustom(dir, closedir);
         }
-
+        {
+            //MobileSubstrate workaround!
+            struct stat st = {};
+            if (!stat("/Library/Frameworks/CydiaSubstrate.framework/Libraries/SubstrateLauncher.dylib", &st)){
+                dlopen("/Library/Frameworks/CydiaSubstrate.framework/Libraries/SubstrateLauncher.dylib", RTLD_NOW);
+            }
+        }
         // Block OTA updates
         xpc_dictionary_set_value(retval, "/System/Library/LaunchDaemons/com.apple.mobile.softwareupdated.plist", NULL);
+    } else if (strcmp(key, "SystemXPCService") == 0 || strcmp(key, "Daemon") == 0) {
+        /*
+            Allow our daemons to execute (jetsam policy)
+        */
+        xpc_object_t def = xpc_dictionary_get_value(retval, "Default");
+        if (def){
+            xpc_object_t global = xpc_dictionary_get_value(def, "Global");
+            if (global) xpc_dictionary_set_bool(global, "ExecuteAllowed", true);
+        }
+    } else if (strcmp(key, "Paths") == 0) {
+        /*
+            Add loading LaunchDaemons from /Library/LaunchDaemons
+        */
+        static bool sDidRun = false;
+        if (!sDidRun){
+            sDidRun = true;
+            xpc_array_append_string(retval, "/Library/LaunchDaemons");
+        }
     }
 
     return retval;
