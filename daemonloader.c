@@ -214,13 +214,6 @@ xpc_object_t my_xpc_dictionary_get_value(xpc_object_t dict, const char *key) {
             }
             safeFreeCustom(dir, closedir);
         }
-        {
-            //MobileSubstrate workaround!
-            struct stat st = {};
-            if (!stat("/Library/Frameworks/CydiaSubstrate.framework/Libraries/SubstrateLauncher.dylib", &st)){
-                dlopen("/Library/Frameworks/CydiaSubstrate.framework/Libraries/SubstrateLauncher.dylib", RTLD_NOW);
-            }
-        }
         // Block OTA updates
         xpc_dictionary_set_value(retval, "/System/Library/LaunchDaemons/com.apple.mobile.softwareupdated.plist", NULL);
     } else if (strcmp(key, "SystemXPCService") == 0 || strcmp(key, "Daemon") == 0) {
